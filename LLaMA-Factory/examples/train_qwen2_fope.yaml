@@ -1,46 +1,53 @@
 ### Model
-model_name_or_path: ./Qwen2-7B-Instruct  # Path to your downloaded Qwen2 model
+model_name_or_path: ./Qwen2-0.5B-Instruct  # Path to your downloaded Qwen2.5-0.5B model
 trust_remote_code: true
+config_path: ./examples/fope_config.json  # Use the FoPE configuration
 
 ### Method
-stage: sft
+stage: pt  # Changed to pretraining
 do_train: true
-finetuning_type: lora
-lora_target: all
+finetuning_type: full  # Changed to full finetuning for pretraining
 
 ### Dataset
-dataset: identity
+dataset: identity  # You can change this to your pretraining dataset
 template: qwen
 
 ### Output
-output_dir: ./saves/qwen2-fope-lora-sft
+output_dir: ./saves/qwen2-0.5b-fope-pretrain
 overwrite_output_dir: true
 
 ### Train
-per_device_train_batch_size: 2
-gradient_accumulation_steps: 4
-learning_rate: 5.0e-5
-num_train_epochs: 3.0
+per_device_train_batch_size: 8  # Increased for 0.5B model
+gradient_accumulation_steps: 2  # Reduced for better memory efficiency
+learning_rate: 1.0e-4  # Higher learning rate for pretraining
+num_train_epochs: 5.0  # More epochs for pretraining
 lr_scheduler_type: cosine
 warmup_ratio: 0.1
 bf16: true
 ddp_timeout: 180000000
 
+# Memory optimization for 0.5B model
+gradient_checkpointing: true
+dataloader_pin_memory: false
+remove_unused_columns: false
+
 ### Eval
 val_size: 0.1
-per_device_eval_batch_size: 1
+per_device_eval_batch_size: 4  # Increased for 0.5B model
 evaluation_strategy: steps
-eval_steps: 500
+eval_steps: 1000  # Less frequent evaluation for pretraining
 save_strategy: steps
-save_steps: 500
-logging_steps: 10
-
-### LoRA
-lora_rank: 8
-lora_alpha: 16
-lora_dropout: 0.05
+save_steps: 1000
+logging_steps: 50
 
 ### FoPE specific settings (these will be read from the config.json)
-# fourier: true
-# fourier_learnable: true
+# The FoPE parameters are now controlled by the config file:
+# fourier: true (enabled in config)
+# fourier_learnable: true (enabled in config)
 # fourier_separate_basis: true
+# fourier_separate_head: true
+
+### Additional pretraining optimizations
+max_seq_length: 2048  # Reasonable sequence length for 0.5B model
+group_by_length: true  # Group similar length sequences for efficiency
+length_column_name: "length"

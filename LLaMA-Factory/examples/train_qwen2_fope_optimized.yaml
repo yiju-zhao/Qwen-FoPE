@@ -1,0 +1,79 @@
+### Model
+model_name_or_path: ./Qwen2-0.5B-Instruct  # Path to your downloaded Qwen2.5-0.5B model
+trust_remote_code: true
+config_path: ./examples/fope_config.json  # Use the FoPE configuration
+
+### Method
+stage: pt  # Pretraining
+do_train: true
+finetuning_type: full  # Full finetuning for pretraining
+
+### Dataset
+dataset: identity  # Change to your pretraining dataset
+template: qwen
+
+### Output
+output_dir: ./saves/qwen2-0.5b-fope-pretrain-optimized
+overwrite_output_dir: true
+
+### Train - Optimized for 4x RTX 4090 (24GB each)
+per_device_train_batch_size: 32  # High batch size per GPU (24GB can handle this)
+gradient_accumulation_steps: 1   # Single accumulation step
+learning_rate: 3.0e-4            # Higher learning rate for multi-GPU
+num_train_epochs: 3.0            # Reasonable epochs
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+ddp_timeout: 180000000
+
+# Multi-GPU optimizations
+ddp_find_unused_parameters: false
+dataloader_num_workers: 8        # More workers for multi-GPU
+gradient_checkpointing: false    # Disable for 4090s (enough VRAM)
+dataloader_pin_memory: true      # Enable for better performance
+
+# Memory and performance optimizations
+remove_unused_columns: false
+max_grad_norm: 1.0
+weight_decay: 0.01
+adam_beta1: 0.9
+adam_beta2: 0.999
+adam_epsilon: 1e-8
+
+### Eval
+val_size: 0.1
+per_device_eval_batch_size: 32   # Match training batch size
+evaluation_strategy: steps
+eval_steps: 500      # More frequent evaluation
+save_strategy: steps
+save_steps: 500
+logging_steps: 25
+
+### Sequence length optimization
+max_seq_length: 8192  # Longer sequences for 4090s
+group_by_length: true
+length_column_name: "length"
+
+### FoPE training settings
+# These are controlled by the config file, but you can override here if needed
+# fourier: true (enabled in config)
+# fourier_learnable: true (enabled in config)
+# fourier_init: "eye_xavier_norm"
+# fourier_init_norm_gain: 0.3
+
+### Multi-GPU specific optimizations
+# For 4x RTX 4090 training
+ddp_backend: nccl
+ddp_bucket_cap_mb: 25
+ddp_broadcast_buffers: false
+ddp_static_graph: true
+
+# Advanced optimizations
+sharded_ddp: false  # Disable for full finetuning
+fsdp: false         # Disable for full finetuning
+deepspeed: ./examples/deepspeed/ds_config_qwen2_fope.json
+
+# Performance tuning
+max_memory_MB: 22000  # Leave some buffer for system
+torch_compile: false  # Can enable if stable
+use_flash_attention_2: true  # Enable Flash Attention 2
