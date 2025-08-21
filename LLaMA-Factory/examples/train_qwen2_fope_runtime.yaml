@@ -1,0 +1,55 @@
+### Model
+model_name_or_path: ./Qwen2-0.5B-Instruct
+trust_remote_code: true
+# No config_path needed - FoPE parameters are controlled by training args
+
+### Method
+stage: pt
+do_train: true
+finetuning_type: full
+
+### Dataset
+dataset: identity
+template: qwen
+
+### Output
+output_dir: ./saves/qwen2-0.5b-fope-runtime
+overwrite_output_dir: true
+
+### Train
+per_device_train_batch_size: 8
+gradient_accumulation_steps: 2
+learning_rate: 1.0e-4
+num_train_epochs: 5.0
+lr_scheduler_type: cosine
+warmup_ratio: 0.1
+bf16: true
+ddp_timeout: 180000000
+
+### Eval
+val_size: 0.1
+per_device_eval_batch_size: 4
+evaluation_strategy: steps
+eval_steps: 500
+save_strategy: steps
+save_steps: 1000
+logging_steps: 50
+
+### FoPE Runtime Configuration (following VideoRope pattern)
+which_rope: fope
+fourier_learnable: true
+fourier_init: eye_xavier_norm
+fourier_dim: 0
+fourier_init_norm_gain: 0.3
+fourier_separate_basis: true
+fourier_separate_head: true
+fourier_norm: false
+fourier_ignore_zero: true
+
+### Additional optimizations
+max_seq_length: 2048
+group_by_length: true
+length_column_name: "length"
+gradient_checkpointing: true
+dataloader_pin_memory: false
+remove_unused_columns: false

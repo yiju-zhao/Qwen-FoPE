@@ -171,6 +171,42 @@ class BaseModelArguments:
         default=False,
         metadata={"help": "Whether to trust the execution of code from datasets/models defined on the Hub or not."},
     )
+    which_rope: Optional[str] = field(
+        default="vanilla_rope",
+        metadata={"help": "Which rope type to use: vanilla_rope, videorope, fope, etc."}
+    )
+    fourier_learnable: bool = field(
+        default=False,
+        metadata={"help": "Whether FoPE coefficients are learnable."}
+    )
+    fourier_init: str = field(
+        default="eye_xavier_norm", 
+        metadata={"help": "FoPE initialization method: eye, eye_xavier_norm, xavier_norm."}
+    )
+    fourier_dim: int = field(
+        default=0,
+        metadata={"help": "FoPE dimension. 0 means use head_dim."}
+    )
+    fourier_init_norm_gain: float = field(
+        default=0.3,
+        metadata={"help": "FoPE initialization norm gain."}
+    )
+    fourier_separate_basis: bool = field(
+        default=True,
+        metadata={"help": "Whether to use separate sin/cos coefficients for FoPE."}
+    )
+    fourier_separate_head: bool = field(
+        default=True,
+        metadata={"help": "Whether to use separate coefficients per attention head for FoPE."}
+    )
+    fourier_norm: bool = field(
+        default=False,
+        metadata={"help": "Whether to normalize FoPE coefficients."}
+    )
+    fourier_ignore_zero: bool = field(
+        default=True,
+        metadata={"help": "Whether to ignore zero frequencies in FoPE."}
+    )
 
     def __post_init__(self):
         if self.model_name_or_path is None:

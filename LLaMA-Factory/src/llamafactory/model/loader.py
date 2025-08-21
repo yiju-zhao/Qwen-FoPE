@@ -165,7 +165,11 @@ def load_model(
             elif type(config) in AutoModelForTextToWaveform._model_mapping.keys():  # audio hack for qwen2_5_omni
                 load_class = AutoModelForTextToWaveform
             else:
-                load_class = AutoModelForCausalLM
+                if 'qwen2' in model_args.model_name_or_path.lower():
+                    from .modeling_qwen2_fope import Qwen2ForCausalLM
+                    load_class = Qwen2ForCausalLM
+                else:
+                    load_class = AutoModelForCausalLM
 
             if model_args.train_from_scratch:
                 model = load_class.from_config(config, trust_remote_code=model_args.trust_remote_code)
@@ -221,5 +225,27 @@ def load_model(
     if model_args.print_param_status and int(os.getenv("LOCAL_RANK", "0")) == 0:
         for name, param in model.named_parameters():
             print(f"name: {name}, dtype: {param.dtype}, device: {param.device}, trainable: {param.requires_grad}")
+
+    # Set which_rope attribute and FoPE parameters following VideoRope pattern
+    if 'qwen2' in model_args.model_name_or_path.lower() and hasattr(model, 'which_rope'):
+        model.which_rope = getattr(model_args, 'which_rope', 'vanilla_rope')
+        
+        # If FoPE mode, dynamically set config parameters from model_args
+        if model.which_rope == 'fope':
+            model.config.fourier = True
+            model.config.fourier_learnable = getattr(model_args, 'fourier_learnable', False)
+            model.config.fourier_init = getattr(model_args, 'fourier_init', 'eye_xavier_norm')
+            model.config.fourier_dim = getattr(model_args, 'fourier_dim', 0)
+            model.config.fourier_init_norm_gain = getattr(model_args, 'fourier_init_norm_gain', 0.3)
+            model.config.fourier_separate_basis = getattr(model_args, 'fourier_separate_basis', True)
+            model.config.fourier_separate_head = getattr(model_args, 'fourier_separate_head', True)
+            model.config.fourier_norm = getattr(model_args, 'fourier_norm', False)
+            model.config.fourier_ignore_zero = getattr(model_args, 'fourier_ignore_zero', True)
+            
+            logger.info_rank0(f"FoPE mode enabled with parameters: learnable={model.config.fourier_learnable}, "
+                             f"init={model.config.fourier_init}, dim={model.config.fourier_dim}")
+        else:
+            model.config.fourier = False
+            logger.info_rank0(f"Using rope mode: {model.which_rope}")
 
     return model

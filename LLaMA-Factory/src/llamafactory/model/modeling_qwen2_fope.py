@@ -692,6 +692,9 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         self.model = Qwen2Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        
+        # Add which_rope attribute like VideoRope pattern
+        self.which_rope = None  # Will be set by loader
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -734,6 +737,15 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         >>> tokenizer.batch_decode(generate_ids, skip_special_tokens=True, clean_up_tokenization_spaces=False)[0]
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
+        
+        # Add conditional FoPE logic following VideoRope pattern
+        if self.which_rope == 'fope':
+            # Enable FoPE mode dynamically
+            self.config.fourier = True
+        elif self.which_rope == 'vanilla_rope':
+            # Use standard RoPE
+            self.config.fourier = False
+        
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
             attention_mask=attention_mask,
