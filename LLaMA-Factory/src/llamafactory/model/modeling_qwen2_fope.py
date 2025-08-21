@@ -787,13 +787,6 @@ class Qwen2ForQuestionAnswering(GenericForQuestionAnswering, Qwen2PreTrainedMode
     base_model_prefix = "transformer"  # For BC, where `transformer` was used instead of `model`
 
 
-# Register the custom classes with transformers
-try:
-    from transformers import AutoConfig, AutoModelForCausalLM
-    AutoConfig.register("qwen2_fope", Qwen2FoPEConfig)
-    AutoModelForCausalLM.register(Qwen2FoPEConfig, Qwen2ForCausalLM)
-except ImportError:
-    pass
 
 __all__ = [
     "Qwen2FoPEConfig",
