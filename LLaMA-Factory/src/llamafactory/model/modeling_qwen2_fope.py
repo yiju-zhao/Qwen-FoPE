@@ -33,78 +33,7 @@ from transformers.utils.generic import check_model_inputs
 from transformers import Qwen2Config
 
 
-class Qwen2FoPEConfig(Qwen2Config):
-    """
-    Extended Qwen2Config with FoPE (Fourier Position Embedding) support.
-    """
-    
-    def __init__(
-        self,
-        vocab_size=151936,
-        hidden_size=4096,
-        intermediate_size=22016,
-        num_hidden_layers=32,
-        num_attention_heads=32,
-        num_key_value_heads=32,
-        hidden_act="silu",
-        max_position_embeddings=32768,
-        initializer_range=0.02,
-        rms_norm_eps=1e-6,
-        use_cache=True,
-        tie_word_embeddings=False,
-        rope_theta=10000.0,
-        rope_scaling=None,
-        use_sliding_window=False,
-        sliding_window=4096,
-        max_window_layers=28,
-        layer_types=None,
-        attention_dropout=0.0,
-        # FoPE parameters
-        fourier=False,
-        fourier_dim=0,
-        fourier_init="eye_xavier_norm",
-        fourier_init_norm_gain=0.3,
-        fourier_separate_basis=True,
-        fourier_separate_head=True,
-        fourier_learnable=False,
-        fourier_norm=False,
-        fourier_ignore_zero=True,
-        **kwargs,
-    ):
-        # Initialize parent config
-        super().__init__(
-            vocab_size=vocab_size,
-            hidden_size=hidden_size,
-            intermediate_size=intermediate_size,
-            num_hidden_layers=num_hidden_layers,
-            num_attention_heads=num_attention_heads,
-            num_key_value_heads=num_key_value_heads,
-            hidden_act=hidden_act,
-            max_position_embeddings=max_position_embeddings,
-            initializer_range=initializer_range,
-            rms_norm_eps=rms_norm_eps,
-            use_cache=use_cache,
-            tie_word_embeddings=tie_word_embeddings,
-            rope_theta=rope_theta,
-            rope_scaling=rope_scaling,
-            use_sliding_window=use_sliding_window,
-            sliding_window=sliding_window,
-            max_window_layers=max_window_layers,
-            layer_types=layer_types,
-            attention_dropout=attention_dropout,
-            **kwargs,
-        )
-        
-        # Add FoPE parameters
-        self.fourier = fourier
-        self.fourier_dim = fourier_dim
-        self.fourier_init = fourier_init
-        self.fourier_init_norm_gain = fourier_init_norm_gain
-        self.fourier_separate_basis = fourier_separate_basis
-        self.fourier_separate_head = fourier_separate_head
-        self.fourier_learnable = fourier_learnable
-        self.fourier_norm = fourier_norm
-        self.fourier_ignore_zero = fourier_ignore_zero
+# Custom FoPE config removed - using runtime parameters from args instead
 
 
 class Qwen2MLP(nn.Module):
@@ -329,7 +258,7 @@ class Qwen2DecoderLayer(GradientCheckpointingLayer):
 
 @auto_docstring
 class Qwen2PreTrainedModel(PreTrainedModel):
-    config_class = Qwen2FoPEConfig
+    config_class = Qwen2Config
     base_model_prefix = "model"
     supports_gradient_checkpointing = True
     _no_split_modules = ["Qwen2DecoderLayer"]
@@ -597,15 +526,53 @@ class Qwen2Model(Qwen2PreTrainedModel):
             [Qwen2DecoderLayer(config, layer_idx) for layer_idx in range(config.num_hidden_layers)]
         )
         self.norm = Qwen2RMSNorm(config.hidden_size, eps=config.rms_norm_eps)
-        if config.fourier:
-            self.rotary_emb = Qwen2FourierEmbedding(config=config)
-        else:
-            self.rotary_emb = Qwen2RotaryEmbedding(config=config)
+        
+        # Initialize FoPE parameters like VideoRope pattern
+        self.which_rope = None  # Will be set by loader
+        self.fourier_learnable = False
+        self.fourier_init = "eye_xavier_norm"
+        self.fourier_dim = 0
+        self.fourier_init_norm_gain = 0.3
+        self.fourier_separate_basis = True
+        self.fourier_separate_head = True
+        self.fourier_norm = False
+        self.fourier_ignore_zero = True
+        
+        # Initialize rotary embedding - will be updated later when parameters are set
+        self.rotary_emb = Qwen2RotaryEmbedding(config=config)
         self.gradient_checkpointing = False
         self.has_sliding_layers = "sliding_attention" in self.config.layer_types
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def _setup_position_embeddings(self):
+        """Setup position embeddings based on which_rope parameter"""
+        if hasattr(self, 'which_rope') and self.which_rope == 'fope':
+            # Only switch to FoPE if we haven't already
+            if not isinstance(self.rotary_emb, Qwen2FourierEmbedding):
+                # Create config-like object with FoPE parameters
+                class FoPEConfig:
+                    def __init__(self, base_config, model):
+                        # Copy base config attributes
+                        for attr in dir(base_config):
+                            if not attr.startswith('_') and not callable(getattr(base_config, attr)):
+                                try:
+                                    setattr(self, attr, getattr(base_config, attr))
+                                except:
+                                    pass
+                        # Add FoPE parameters from model
+                        self.fourier_dim = model.fourier_dim
+                        self.fourier_init = model.fourier_init
+                        self.fourier_init_norm_gain = model.fourier_init_norm_gain
+                        self.fourier_separate_basis = model.fourier_separate_basis
+                        self.fourier_separate_head = model.fourier_separate_head
+                        self.fourier_learnable = model.fourier_learnable
+                        self.fourier_norm = model.fourier_norm
+                        self.fourier_ignore_zero = model.fourier_ignore_zero
+                
+                fope_config = FoPEConfig(self.config, self)
+                self.rotary_emb = Qwen2FourierEmbedding(config=fope_config)
 
     @check_model_inputs
     @auto_docstring
@@ -620,6 +587,9 @@ class Qwen2Model(Qwen2PreTrainedModel):
         cache_position: Optional[torch.LongTensor] = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> BaseModelOutputWithPast:
+        # Setup position embeddings based on which_rope parameter
+        self._setup_position_embeddings()
+        
         if (input_ids is None) ^ (inputs_embeds is not None):
             raise ValueError("You must specify exactly one of input_ids or inputs_embeds")
 
@@ -693,9 +663,6 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         
-        # Add which_rope attribute like VideoRope pattern
-        self.which_rope = None  # Will be set by loader
-
         # Initialize weights and apply final processing
         self.post_init()
 
@@ -738,13 +705,7 @@ class Qwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         "Hey, are you conscious? Can you talk to me?\nI'm not conscious, but I can talk to you."
         ```"""
         
-        # Add conditional FoPE logic following VideoRope pattern
-        if self.which_rope == 'fope':
-            # Enable FoPE mode dynamically
-            self.config.fourier = True
-        elif self.which_rope == 'vanilla_rope':
-            # Use standard RoPE
-            self.config.fourier = False
+        # Conditional FoPE logic handled in model.rotary_emb based on which_rope
         
         outputs: BaseModelOutputWithPast = self.model(
             input_ids=input_ids,
@@ -789,8 +750,7 @@ class Qwen2ForQuestionAnswering(GenericForQuestionAnswering, Qwen2PreTrainedMode
 
 
 __all__ = [
-    "Qwen2FoPEConfig",
-    "Qwen2PreTrainedModel",
+    "Qwen2PreTrainedModel", 
     "Qwen2Model",
     "Qwen2ForCausalLM",
     "Qwen2ForSequenceClassification",
