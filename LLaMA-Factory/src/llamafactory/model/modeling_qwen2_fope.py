@@ -322,6 +322,11 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
     Inherits from Qwen2RotaryEmbedding to ensure proper dimension handling.
     """
     
+    # Type annotations for buffers (following RoPE pattern)
+    sin_coef: torch.Tensor
+    cos_coef: torch.Tensor
+    fourier_coef: torch.Tensor
+    
     def __init__(self, config: Qwen2Config, device=None):
         # Check for unsupported configuration
         if config.fourier_separate_head:
@@ -348,23 +353,30 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
         size = (self.input_dim, self.output_dim)
         self.coef_shape = "Dd"
             
-        # Initialize FoPE coefficients with proper device placement
+        # Initialize FoPE coefficients as buffers (following RoPE pattern)
         if config.fourier_separate_basis:
-            self.sin_coef = nn.Parameter(
-                torch.randn(size=size, dtype=torch.float),
-                requires_grad=config.fourier_learnable
-            )
-            self.cos_coef = nn.Parameter(
-                torch.randn(size=size, dtype=torch.float),
-                requires_grad=config.fourier_learnable
-            )
+            sin_coef_tensor = torch.randn(size=size, dtype=torch.float)
+            cos_coef_tensor = torch.randn(size=size, dtype=torch.float)
+            
+            # Register as buffers (like inv_freq in RoPE)
+            self.register_buffer("sin_coef", sin_coef_tensor, persistent=True)
+            self.register_buffer("cos_coef", cos_coef_tensor, persistent=True)
+            
+            # Set requires_grad if learnable
+            if config.fourier_learnable:
+                self.sin_coef.requires_grad_(True)
+                self.cos_coef.requires_grad_(True)
         else:
-            self.fourier_coef = nn.Parameter(
-                torch.randn(size=size, dtype=torch.float),
-                requires_grad=config.fourier_learnable
-            )
+            fourier_coef_tensor = torch.randn(size=size, dtype=torch.float)
+            
+            # Register as buffer (like inv_freq in RoPE)
+            self.register_buffer("fourier_coef", fourier_coef_tensor, persistent=True)
+            
+            # Set requires_grad if learnable
+            if config.fourier_learnable:
+                self.fourier_coef.requires_grad_(True)
         
-        # Move parameters to device if specified
+        # Move to device if specified (buffers will be moved automatically)
         if device is not None:
             self.to(device)
             
@@ -530,8 +542,8 @@ class Qwen2Model(Qwen2PreTrainedModel):
         if hasattr(self, 'which_rope') and self.which_rope == 'fope':
             # Only switch to FoPE if we haven't already
             if not isinstance(self.rotary_emb, Qwen2FourierEmbedding):
-                # Get the current device from existing rotary_emb
-                current_device = next(self.rotary_emb.parameters()).device
+                # Get the current device from existing rotary_emb buffer (following RoPE pattern)
+                current_device = self.rotary_emb.inv_freq.device
                 
                 # Create config-like object with FoPE parameters
                 class FoPEConfig:
