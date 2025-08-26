@@ -323,6 +323,14 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
     """
     
     def __init__(self, config: Qwen2Config, device=None):
+        # Check for unsupported configuration
+        if config.fourier_separate_head:
+            raise ValueError(
+                "fourier_separate_head=True is not supported in Qwen2 architecture. "
+                "Qwen2 applies position embeddings before head separation, making per-head "
+                "Fourier coefficients incompatible. Please set fourier_separate_head=False."
+            )
+        
         # Initialize base RoPE first
         super().__init__(config, device)
         
@@ -336,19 +344,9 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
             self.input_dim = self.head_dim // 2  # Use head_dim directly
             self.output_dim = self.head_dim // 2
             
-        # Set up input/output shapes for einsum operations
-        self.input_shape = "btD"  # batch, seq_len, input_dim
-        self.output_shape = "btd"  # batch, seq_len, output_dim
-            
-        # Set up coefficient shapes
-        if config.fourier_separate_head:
-            size = (config.num_attention_heads, self.input_dim, self.output_dim)
-            self.coef_shape = "hDd"
-            self.input_shape = "bhtD"  # batch, heads, seq_len, input_dim
-            self.output_shape = "bhtd"  # batch, heads, seq_len, output_dim
-        else:
-            size = (self.input_dim, self.output_dim)
-            self.coef_shape = "Dd"
+        # Qwen2 uses single coefficient matrices (no separate heads)
+        size = (self.input_dim, self.output_dim)
+        self.coef_shape = "Dd"
             
         # Initialize FoPE coefficients
         if config.fourier_separate_basis:
@@ -389,13 +387,8 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
             if self.config.fourier_separate_basis:
                 if self.config.fourier_init == "eye":
                     if self.input_dim == self.output_dim:
-                        if self.config.fourier_separate_head:
-                            for i in range(self.sin_coef.size(0)):
-                                torch.nn.init.eye_(self.sin_coef[i])
-                                torch.nn.init.eye_(self.cos_coef[i])
-                        else:
-                            torch.nn.init.eye_(self.sin_coef)
-                            torch.nn.init.eye_(self.cos_coef)
+                        torch.nn.init.eye_(self.sin_coef)
+                        torch.nn.init.eye_(self.cos_coef)
                     else:
                         self.sin_coef.data = self.get_step_eye(self.sin_coef)
                         self.cos_coef.data = self.get_step_eye(self.cos_coef)
@@ -405,13 +398,8 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
                     torch.nn.init.xavier_normal_(self.cos_coef, gain=self.config.fourier_init_norm_gain)
                     
                     if self.input_dim == self.output_dim:
-                        if self.config.fourier_separate_head:
-                            for i in range(self.sin_coef.size(0)):
-                                self.sin_coef[i] += torch.eye(self.input_dim, device=self.sin_coef.device)
-                                self.cos_coef[i] += torch.eye(self.input_dim, device=self.cos_coef.device)
-                        else:
-                            self.sin_coef += torch.eye(self.input_dim, device=self.sin_coef.device)
-                            self.cos_coef += torch.eye(self.input_dim, device=self.cos_coef.device)
+                        self.sin_coef += torch.eye(self.input_dim, device=self.sin_coef.device)
+                        self.cos_coef += torch.eye(self.input_dim, device=self.cos_coef.device)
                     else:
                         self.sin_coef += self.get_step_eye(self.sin_coef)
                         self.cos_coef += self.get_step_eye(self.cos_coef)
@@ -424,11 +412,7 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
             else:
                 if self.config.fourier_init == "eye":
                     if self.input_dim == self.output_dim:
-                        if self.config.fourier_separate_head:
-                            for i in range(self.fourier_coef.size(0)):
-                                torch.nn.init.eye_(self.fourier_coef[i])
-                        else:
-                            torch.nn.init.eye_(self.fourier_coef)
+                        torch.nn.init.eye_(self.fourier_coef)
                     else:
                         self.fourier_coef.data = self.get_step_eye(self.fourier_coef)
                         
@@ -436,11 +420,7 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
                     torch.nn.init.xavier_normal_(self.fourier_coef, gain=self.config.fourier_init_norm_gain)
                     
                     if self.input_dim == self.output_dim:
-                        if self.config.fourier_separate_head:
-                            for i in range(self.fourier_coef.size(0)):
-                                self.fourier_coef[i] += torch.eye(self.input_dim, device=self.fourier_coef.device)
-                        else:
-                            self.fourier_coef += torch.eye(self.input_dim, device=self.fourier_coef.device)
+                        self.fourier_coef += torch.eye(self.input_dim, device=self.fourier_coef.device)
                     else:
                         self.fourier_coef += self.get_step_eye(self.fourier_coef)
                         
@@ -451,29 +431,25 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
     
     def apply_fourier_transform(self, pos_sin, pos_cos):
         """Apply Fourier transformation to RoPE frequencies."""
-        # Use the pre-defined shapes based on configuration
+        # Qwen2 only supports single coefficient matrices (no separate heads)
         if self.config.fourier_separate_basis:
             if self.config.fourier_norm:
-                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
+                fourier_sin = torch.einsum("btD, Dd -> btd", 
                                          pos_sin, self.sin_coef / self.sin_coef.sum(dim=-2, keepdim=True))
-                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
+                fourier_cos = torch.einsum("btD, Dd -> btd", 
                                          pos_cos, self.cos_coef / self.cos_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
-                                         pos_sin, self.sin_coef)
-                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
-                                         pos_cos, self.cos_coef)
+                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, self.sin_coef)
+                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, self.cos_coef)
         else:
             if self.config.fourier_norm:
-                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
+                fourier_sin = torch.einsum("btD, Dd -> btd", 
                                          pos_sin, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
-                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
+                fourier_cos = torch.einsum("btD, Dd -> btd", 
                                          pos_cos, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
-                                         pos_sin, self.fourier_coef)
-                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
-                                         pos_cos, self.fourier_coef)
+                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, self.fourier_coef)
+                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, self.fourier_coef)
         
         # Pad if necessary when ignoring zero frequencies
         if self.config.fourier_ignore_zero:

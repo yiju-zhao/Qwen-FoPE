@@ -44,6 +44,6 @@ fourier_init: eye_xavier_norm
 fourier_dim: 0
 fourier_init_norm_gain: 0.3
 fourier_separate_basis: true
-fourier_separate_head: true
+fourier_separate_head: false  # Not supported in Qwen2 architecture
 fourier_norm: false
 fourier_ignore_zero: true
