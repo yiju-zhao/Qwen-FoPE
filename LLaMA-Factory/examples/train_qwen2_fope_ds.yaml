@@ -38,7 +38,7 @@ ddp_timeout: 180000000
 resume_from_checkpoint: null
 
 ### FoPE Runtime Configuration (following VideoRope pattern)
-which_rope: vanilla_rope
+which_rope: fope
 fourier_learnable: true
 fourier_init: eye_xavier_norm
 fourier_dim: 0

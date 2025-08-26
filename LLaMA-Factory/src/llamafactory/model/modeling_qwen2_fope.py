@@ -348,21 +348,25 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
         size = (self.input_dim, self.output_dim)
         self.coef_shape = "Dd"
             
-        # Initialize FoPE coefficients
+        # Initialize FoPE coefficients with proper device placement
         if config.fourier_separate_basis:
             self.sin_coef = nn.Parameter(
-                torch.randn(size=size, device=device, dtype=torch.float),
+                torch.randn(size=size, dtype=torch.float),
                 requires_grad=config.fourier_learnable
             )
             self.cos_coef = nn.Parameter(
-                torch.randn(size=size, device=device, dtype=torch.float),
+                torch.randn(size=size, dtype=torch.float),
                 requires_grad=config.fourier_learnable
             )
         else:
             self.fourier_coef = nn.Parameter(
-                torch.randn(size=size, device=device, dtype=torch.float),
+                torch.randn(size=size, dtype=torch.float),
                 requires_grad=config.fourier_learnable
             )
+        
+        # Move parameters to device if specified
+        if device is not None:
+            self.to(device)
             
         self.reset_parameters()
     
@@ -431,31 +435,26 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
     
     def apply_fourier_transform(self, pos_sin, pos_cos):
         """Apply Fourier transformation to RoPE frequencies."""
-        # Ensure coefficient tensors are on the same device as input tensors
-        device = pos_sin.device
-        
         # Qwen2 only supports single coefficient matrices (no separate heads)
+        # Parameters should already be on the correct device due to proper initialization
         if self.config.fourier_separate_basis:
-            sin_coef = self.sin_coef.to(device)
-            cos_coef = self.cos_coef.to(device)
             if self.config.fourier_norm:
                 fourier_sin = torch.einsum("btD, Dd -> btd", 
-                                         pos_sin, sin_coef / sin_coef.sum(dim=-2, keepdim=True))
+                                         pos_sin, self.sin_coef / self.sin_coef.sum(dim=-2, keepdim=True))
                 fourier_cos = torch.einsum("btD, Dd -> btd", 
-                                         pos_cos, cos_coef / cos_coef.sum(dim=-2, keepdim=True))
+                                         pos_cos, self.cos_coef / self.cos_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, sin_coef)
-                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, cos_coef)
+                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, self.sin_coef)
+                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, self.cos_coef)
         else:
-            fourier_coef = self.fourier_coef.to(device)
             if self.config.fourier_norm:
                 fourier_sin = torch.einsum("btD, Dd -> btd", 
-                                         pos_sin, fourier_coef / fourier_coef.sum(dim=-2, keepdim=True))
+                                         pos_sin, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
                 fourier_cos = torch.einsum("btD, Dd -> btd", 
-                                         pos_cos, fourier_coef / fourier_coef.sum(dim=-2, keepdim=True))
+                                         pos_cos, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, fourier_coef)
-                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, fourier_coef)
+                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, self.fourier_coef)
+                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, self.fourier_coef)
         
         # Pad if necessary when ignoring zero frequencies
         if self.config.fourier_ignore_zero:
@@ -531,6 +530,9 @@ class Qwen2Model(Qwen2PreTrainedModel):
         if hasattr(self, 'which_rope') and self.which_rope == 'fope':
             # Only switch to FoPE if we haven't already
             if not isinstance(self.rotary_emb, Qwen2FourierEmbedding):
+                # Get the current device from existing rotary_emb
+                current_device = next(self.rotary_emb.parameters()).device
+                
                 # Create config-like object with FoPE parameters
                 class FoPEConfig:
                     def __init__(self, base_config, model):
@@ -552,7 +554,10 @@ class Qwen2Model(Qwen2PreTrainedModel):
                         self.fourier_ignore_zero = model.fourier_ignore_zero
                 
                 fope_config = FoPEConfig(self.config, self)
-                self.rotary_emb = Qwen2FourierEmbedding(config=fope_config)
+                # Create FoPE embedding on the same device as the current model
+                self.rotary_emb = Qwen2FourierEmbedding(config=fope_config, device=current_device)
+                # Ensure all parameters and buffers are on the correct device
+                self.rotary_emb = self.rotary_emb.to(current_device)
 
     @check_model_inputs
     @auto_docstring
