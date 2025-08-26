@@ -431,25 +431,31 @@ class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
     
     def apply_fourier_transform(self, pos_sin, pos_cos):
         """Apply Fourier transformation to RoPE frequencies."""
+        # Ensure coefficient tensors are on the same device as input tensors
+        device = pos_sin.device
+        
         # Qwen2 only supports single coefficient matrices (no separate heads)
         if self.config.fourier_separate_basis:
+            sin_coef = self.sin_coef.to(device)
+            cos_coef = self.cos_coef.to(device)
             if self.config.fourier_norm:
                 fourier_sin = torch.einsum("btD, Dd -> btd", 
-                                         pos_sin, self.sin_coef / self.sin_coef.sum(dim=-2, keepdim=True))
+                                         pos_sin, sin_coef / sin_coef.sum(dim=-2, keepdim=True))
                 fourier_cos = torch.einsum("btD, Dd -> btd", 
-                                         pos_cos, self.cos_coef / self.cos_coef.sum(dim=-2, keepdim=True))
+                                         pos_cos, cos_coef / cos_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, self.sin_coef)
-                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, self.cos_coef)
+                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, sin_coef)
+                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, cos_coef)
         else:
+            fourier_coef = self.fourier_coef.to(device)
             if self.config.fourier_norm:
                 fourier_sin = torch.einsum("btD, Dd -> btd", 
-                                         pos_sin, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
+                                         pos_sin, fourier_coef / fourier_coef.sum(dim=-2, keepdim=True))
                 fourier_cos = torch.einsum("btD, Dd -> btd", 
-                                         pos_cos, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
+                                         pos_cos, fourier_coef / fourier_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, self.fourier_coef)
-                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, self.fourier_coef)
+                fourier_sin = torch.einsum("btD, Dd -> btd", pos_sin, fourier_coef)
+                fourier_cos = torch.einsum("btD, Dd -> btd", pos_cos, fourier_coef)
         
         # Pad if necessary when ignoring zero frequencies
         if self.config.fourier_ignore_zero:
