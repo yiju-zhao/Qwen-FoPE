@@ -311,50 +311,41 @@ class Qwen2RotaryEmbedding(nn.Module):
         return cos.to(dtype=x.dtype), sin.to(dtype=x.dtype)
 
 
-class Qwen2FourierEmbedding(nn.Module):
+class Qwen2FourierEmbedding(Qwen2RotaryEmbedding):
     """
     Fourier Position Embedding (FoPE) for Qwen2.
     
     FoPE extends RoPE by applying learnable linear transformations to the
     sin/cos basis functions, allowing the model to learn optimal frequency
     combinations for the task.
+    
+    Inherits from Qwen2RotaryEmbedding to ensure proper dimension handling.
     """
     
     def __init__(self, config: Qwen2Config, device=None):
-        super().__init__()
-        self.config = config
+        # Initialize base RoPE first
+        super().__init__(config, device)
+        
         self.head_dim = getattr(config, "head_dim", config.hidden_size // config.num_attention_heads)
         
-        # Determine input dimension
-        self.dim = config.fourier_dim if config.fourier_dim > 0 else self.head_dim
-        
-        # Initialize base RoPE parameters
-        self.max_seq_len_cached = config.max_position_embeddings
-        self.original_max_seq_len = config.max_position_embeddings
-        
-        # RoPE theta and scaling
-        self.rope_theta = config.rope_theta
-        if hasattr(config, "rope_scaling") and config.rope_scaling is not None:
-            self.rope_type = config.rope_scaling.get("rope_type", "default")
-        else:
-            self.rope_type = "default"
-            
-        # Create inverse frequencies
-        inv_freq = 1.0 / (self.rope_theta ** (torch.arange(0, self.dim, 2, dtype=torch.int64).float() / self.dim))
-        self.register_buffer("inv_freq", inv_freq, persistent=False)
-        
-        # Set up FoPE dimensions
+        # Set up FoPE dimensions following OLMo pattern
         if config.fourier_ignore_zero:
-            self.input_dim = self.inv_freq.size(-1)
+            self.input_dim = self.inv_freq.size(-1)  # This is dim//2 from RoPE
             self.output_dim = min(self.input_dim, self.head_dim // 4)
         else:
-            self.input_dim = self.dim // 2
+            self.input_dim = self.head_dim // 2  # Use head_dim directly
             self.output_dim = self.head_dim // 2
+            
+        # Set up input/output shapes for einsum operations
+        self.input_shape = "btD"  # batch, seq_len, input_dim
+        self.output_shape = "btd"  # batch, seq_len, output_dim
             
         # Set up coefficient shapes
         if config.fourier_separate_head:
             size = (config.num_attention_heads, self.input_dim, self.output_dim)
             self.coef_shape = "hDd"
+            self.input_shape = "bhtD"  # batch, heads, seq_len, input_dim
+            self.output_shape = "bhtd"  # batch, heads, seq_len, output_dim
         else:
             size = (self.input_dim, self.output_dim)
             self.coef_shape = "Dd"
@@ -460,36 +451,36 @@ class Qwen2FourierEmbedding(nn.Module):
     
     def apply_fourier_transform(self, pos_sin, pos_cos):
         """Apply Fourier transformation to RoPE frequencies."""
-        input_shape = "bhtD" if len(pos_sin.shape) == 4 else "btD"
-        output_shape = "bhtd" if len(pos_sin.shape) == 4 else "btd"
-        
+        # Use the pre-defined shapes based on configuration
         if self.config.fourier_separate_basis:
             if self.config.fourier_norm:
-                fourier_sin = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_sin, self.sin_coef / self.sin_coef.sum(dim=-2, keepdim=True))
-                fourier_cos = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_cos, self.cos_coef / self.cos_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_sin, self.sin_coef)
-                fourier_cos = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_cos, self.cos_coef)
         else:
             if self.config.fourier_norm:
-                fourier_sin = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_sin, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
-                fourier_cos = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_cos, self.fourier_coef / self.fourier_coef.sum(dim=-2, keepdim=True))
             else:
-                fourier_sin = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_sin = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_sin, self.fourier_coef)
-                fourier_cos = torch.einsum(f"{input_shape}, {self.coef_shape} -> {output_shape}", 
+                fourier_cos = torch.einsum(f"{self.input_shape}, {self.coef_shape} -> {self.output_shape}", 
                                          pos_cos, self.fourier_coef)
         
+        # Pad if necessary when ignoring zero frequencies
         if self.config.fourier_ignore_zero:
             fourier_sin = F.pad(fourier_sin, (0, self.head_dim//2 - fourier_sin.size(-1)), mode="constant", value=0)
             fourier_cos = F.pad(fourier_cos, (0, self.head_dim//2 - fourier_cos.size(-1)), mode="constant", value=1)
         
+        # Duplicate to create full head_dim sized tensors
         fourier_sin = torch.cat((fourier_sin, fourier_sin), dim=-1)
         fourier_cos = torch.cat((fourier_cos, fourier_cos), dim=-1)
         
@@ -498,18 +489,25 @@ class Qwen2FourierEmbedding(nn.Module):
     @torch.no_grad()
     def forward(self, x, position_ids):
         """Forward pass for FoPE."""
-        inv_freq_expanded = self.inv_freq[None, :, None].float().expand(position_ids.shape[0], -1, 1).to(x.device)
-        position_ids_expanded = position_ids[:, None, :].float()
+        # First get the base RoPE embeddings using the parent class method
+        base_cos, base_sin = super().forward(x, position_ids)
         
+        # Extract the frequency components (first half of the embeddings)
+        # base_cos and base_sin have shape [batch, seq_len, head_dim]
+        # We need the frequency components which are head_dim//2 sized
         device_type = x.device.type if isinstance(x.device.type, str) and x.device.type != "mps" else "cpu"
         with torch.autocast(device_type=device_type, enabled=False):
-            freqs = (inv_freq_expanded.float() @ position_ids_expanded.float()).transpose(1, 2)
-            emb = torch.cat((freqs, freqs), dim=-1)
-            pos_sin = emb.sin()
-            pos_cos = emb.cos()
+            # Get frequency components from base RoPE
+            freq_cos = base_cos[..., :self.head_dim//2]  # [batch, seq_len, head_dim//2]
+            freq_sin = base_sin[..., :self.head_dim//2]  # [batch, seq_len, head_dim//2]
+            
+            # For fourier_ignore_zero case, we only use the inv_freq.size(-1) components
+            if self.config.fourier_ignore_zero:
+                freq_cos = freq_cos[..., :self.input_dim]
+                freq_sin = freq_sin[..., :self.input_dim]
             
             # Apply Fourier transformation
-            fourier_sin, fourier_cos = self.apply_fourier_transform(pos_sin, pos_cos)
+            fourier_sin, fourier_cos = self.apply_fourier_transform(freq_sin, freq_cos)
         
         return fourier_cos.to(dtype=x.dtype), fourier_sin.to(dtype=x.dtype)
 
